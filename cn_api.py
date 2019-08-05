@@ -6,43 +6,76 @@ from os.path import join
 
 class CnAPI(object):
 
-    def __init__(self):
+    def __init__(self, key, secret):
 
-        key, secret = 'fa4e980eaf7e4302811fb72336a648d0', '939563c8f0df4092b58823ae0d53ccb0'
         self.token = self.__get_token(key, secret)
 
         name_dict_file = join(sys.path[0], 'name_dictionary_cn_info.xlsx')
-        self.income_dict = pd.read_excel(name_dict_file, 'income')['中文名称'].to_dict()
-        self.balance_dict = pd.read_excel(name_dict_file, 'balance')['中文名称'].to_dict()
-        self.cash_dict = pd.read_excel(name_dict_file, 'cash')['中文名称'].to_dict()
+        self.income_dict = pd.read_excel(name_dict_file, 'income', index_col=0)['中文名称'].to_dict()
+        self.balance_dict = pd.read_excel(name_dict_file, 'balance', index_col=0)['中文名称'].to_dict()
+        self.cash_dict = pd.read_excel(name_dict_file, 'cash', index_col=0)['中文名称'].to_dict()
 
-    def get_statement(self, code_list):
+        self.__industry_file = join(sys.path[0], 'industry.csv')
+        self.__industry_df = pd.read_csv(self.__industry_file, dtype='str')
+        self.industry_list = self.__industry_df.subclass_name.unique().tolist()
+        # self.industry_df = self.__industry_df.groupby('subclass_name').name.count().sort_values(ascending=False)
+
+    def name_to_industry(self, stock_name):
+        try:
+            return self.__industry_df[self.__industry_df.name == stock_name].subclass_name.iloc[0]
+        except IndexError:
+            print(stock_name, '不在目前的A股列表里')
+            return None
+
+    def industry_to_names(self, industry_name=None):
+        try:
+            return self.__industry_df[self.__industry_df.subclass_name == industry_name].name.tolist()
+        except IndexError:
+            print(industry_name, '不符合目前A股细分行业')
+            return None
+
+    def industry_to_codes(self, industry_name):
+        try:
+            return self.__industry_df[self.__industry_df.subclass_name == industry_name].code.tolist()
+        except IndexError:
+            print(industry_name, '不符合目前A股细分行业')
+            return None
+
+    def download_statements(self, code_list, report_period='2018-12-31', limit=50):
 
         income_url = 'http://webapi.cninfo.com.cn/api/stock/p_stock2301'
         balance_url = 'http://webapi.cninfo.com.cn/api/stock/p_stock2300'
         cash_url = 'http://webapi.cninfo.com.cn/api/stock/p_stock2302'
 
-        post_data = {'scode': ','.join(code_list), 'type': '071001', 'source': '033003'}
+        if len(code_list) <= limit:
 
-        income = self.__cninfo_api(income_url, post_data).rename(columns=self.income_dict)
-        balance = self.__cninfo_api(balance_url, post_data).rename(columns=self.balance_dict)
-        cash = self.__cninfo_api(cash_url, post_data).rename(columns=self.cash_dict)
+            post_data = {'scode': ','.join(code_list), 'type': '071001', 'source': '033003', 'rdate': report_period}
 
-        try:
-            statement_list = [statement.set_index(['证券代码', '证券简称', '报告年度']) for statement in [income, balance, cash]]
-            drop_list = ['公告日期', '截止日期', '合并类型编码', '合并类型', '报表来源编码', '报表来源', '机构名称', '开始日期']
-            return pd.concat(statement_list, axis=1).drop(columns=drop_list)
-        except KeyError:
-            return pd.DataFrame()
+            income = self.__cninfo_api(income_url, post_data).rename(columns=self.income_dict)[self.income_dict.values()]
+            balance = self.__cninfo_api(balance_url, post_data).rename(columns=self.balance_dict)[self.balance_dict.values()]
+            cash = self.__cninfo_api(cash_url, post_data).rename(columns=self.cash_dict)[self.cash_dict.values()]
 
-    def get_industry_lists(self):
+            try:
+                statement_list = [statement.set_index(['证券代码', '证券简称', '报告年度']) for statement in [income, balance, cash]]
+                drop_list = ['公告日期', '截止日期', '合并类型编码', '合并类型', '报表来源编码', '报表来源', '机构名称', '开始日期']
+                return pd.concat(statement_list, axis=1).drop(columns=drop_list)
+            except KeyError:
+                return pd.DataFrame()
+
+        else:
+            head_part = self.download_statements(code_list=code_list[:limit])
+            rear_part = self.download_statements(code_list=code_list[limit:])
+            return pd.concat([head_part, rear_part], axis=0)
+
+    def download_industry_lists(self):
         url, post_data = 'http://webapi.cninfo.com.cn/api/stock/p_public0004', {'platetype': '137002'}
         raw_df = self.__cninfo_api(url, post_data, result_keyword='records', dataframe=True)
 
         name_dict = {'F009V': 'class_code', 'F011V': 'subclass_code', 'F004V': 'class_name', 'F006V': 'subclass_name',
                      'SECCODE': 'code', 'SECNAME': 'name'}
 
-        return raw_df.rename(columns=name_dict)[name_dict.values()].sort_values(by=['class_code', 'subclass_code'])
+        cleaned_df = raw_df.rename(columns=name_dict)[name_dict.values()].sort_values(by=['class_code', 'subclass_code'])
+        cleaned_df.to_csv(self.__industry_file, index=False)
 
     def __get_token(self, key, secret):
 
