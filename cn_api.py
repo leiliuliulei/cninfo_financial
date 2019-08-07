@@ -2,23 +2,29 @@ import pandas as pd
 import requests
 import sys
 from os.path import join
+from configparser import ConfigParser
 
 
 class CnAPI(object):
 
     def __init__(self, key, secret):
 
-        self.token = self.__get_token(key, secret)
+        config = ConfigParser()
+        config.read('config.ini')
 
-        name_dict_file = join(sys.path[0], 'name_dictionary_cn_info.xlsx')
-        self.income_dict = pd.read_excel(name_dict_file, 'income', index_col=0)['中文名称'].to_dict()
-        self.balance_dict = pd.read_excel(name_dict_file, 'balance', index_col=0)['中文名称'].to_dict()
-        self.cash_dict = pd.read_excel(name_dict_file, 'cash', index_col=0)['中文名称'].to_dict()
+        industry_df = pd.read_csv(config.get('industry', 'Industry_File_Name'), dtype='str')
+        name_dict_df = pd.read_excel(config.get('statement', 'Dictionary_File_Name'), sheet_name=None, index_col=0)
 
-        self.__industry_file = join(sys.path[0], 'industry.csv')
-        self.__industry_df = pd.read_csv(self.__industry_file, dtype='str')
-        self.industry_list = self.__industry_df.subclass_name.unique().tolist()
-        # self.industry_df = self.__industry_df.groupby('subclass_name').name.count().sort_values(ascending=False)
+        self.industry_list = industry_df.subclass_name.unique().tolist()
+        self.code_list = industry_df.code.unique().tolist()
+
+        self.__industry_df = industry_df
+
+        self.__income_dict = name_dict_df['income']['中文名称'].to_dict()
+        self.__balance_dict = name_dict_df['balance']['中文名称'].to_dict()
+        self.__cash_dict = name_dict_df['cash']['中文名称'].to_dict()
+
+        self.__token = self.__get_token(config.get('token', 'key'), config.get('token', 'secret'))
 
     def name_to_industry(self, stock_name):
         try:
@@ -51,9 +57,9 @@ class CnAPI(object):
 
             post_data = {'scode': ','.join(code_list), 'type': '071001', 'source': '033003', 'rdate': report_period}
 
-            income = self.__cninfo_api(income_url, post_data).rename(columns=self.income_dict)[self.income_dict.values()]
-            balance = self.__cninfo_api(balance_url, post_data).rename(columns=self.balance_dict)[self.balance_dict.values()]
-            cash = self.__cninfo_api(cash_url, post_data).rename(columns=self.cash_dict)[self.cash_dict.values()]
+            income = self.__cninfo_api(income_url, post_data).rename(columns=self.__income_dict)[self.__income_dict.values()]
+            balance = self.__cninfo_api(balance_url, post_data).rename(columns=self.__balance_dict)[self.__balance_dict.values()]
+            cash = self.__cninfo_api(cash_url, post_data).rename(columns=self.__cash_dict)[self.__cash_dict.values()]
 
             try:
                 statement_list = [statement.set_index(['证券代码', '证券简称', '报告年度']) for statement in [income, balance, cash]]
@@ -75,7 +81,11 @@ class CnAPI(object):
                      'SECCODE': 'code', 'SECNAME': 'name'}
 
         cleaned_df = raw_df.rename(columns=name_dict)[name_dict.values()].sort_values(by=['class_code', 'subclass_code'])
-        cleaned_df.to_csv(self.__industry_file, index=False)
+
+        config = ConfigParser()
+        config.read('config.ini')
+
+        cleaned_df.to_csv(config.get('industry', 'Industry_File_Name'), index=False)
 
     def __get_token(self, key, secret):
 
@@ -94,7 +104,7 @@ class CnAPI(object):
     def __cninfo_api(self, url, post_data, result_keyword='records', dataframe=True):
 
         try:
-            post_data.update(access_token=self.token)
+            post_data.update(access_token=self.__token)
         except AttributeError:
             pass
 
@@ -110,5 +120,3 @@ class CnAPI(object):
         return result
 
 
-# engine = create_engine('mysql://root:12qwaszx^@localhost:3306/cn_info')
-# nn.to_sql(name='industry', con=engine, if_exists='replace', index=False)
