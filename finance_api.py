@@ -2,9 +2,11 @@ import pandas as pd
 import requests
 import sqlite3
 from math import ceil
+import tushare as ts
+from datetime import datetime, timedelta
 
 
-class CnInfoAPI(object):
+class CnInfoAPI:
 
     def __init__(self, key, secret):
 
@@ -47,13 +49,18 @@ class CnInfoAPI(object):
             print('本次报表数据下载为空，因此未保存进数据库')
 
     def download_industry_lists(self, database_con, table_name):
-        url, post_data = 'http://webapi.cninfo.com.cn/api/stock/p_public0004', {'platetype': '137002'}
+
+        # 下载行业分类信息，并保存到数据库里
+        # platetype: 137002是证监会分类，137003是巨潮分类，137004是申银万国分类，137005是新财富分类
+        # 经过比较，申银万国分类最详细，最合理。把应该放到一起比较的公司放到了一起。因此这里采用申银万国分类
+
+        url, post_data = 'http://webapi.cninfo.com.cn/api/stock/p_public0004', {'platetype': '137004'}
         raw_df = self.__cninfo_api(url, post_data, result_keyword='records', dataframe=True)
 
-        name_dict = {'F009V': 'class_code', 'F011V': 'subclass_code', 'F004V': 'class_name', 'F006V': 'subclass_name',
-                     'SECCODE': 'code', 'SECNAME': 'name'}
-        if raw_df:
-            cleaned_df = raw_df.rename(columns=name_dict)[name_dict.values()].sort_values(by=['class_code', 'subclass_code'])
+        name_dict = {'F004V': 'class_name', 'F006V': 'subclass_name', 'SECCODE': 'code', 'SECNAME': 'name'}
+
+        if not raw_df.empty:
+            cleaned_df = raw_df.rename(columns=name_dict)[name_dict.values()].sort_values(by=['class_name', 'subclass_name'])
             cleaned_df.to_sql(name=table_name, con=database_con, if_exists='replace', index=False)
 
     def __get_token(self, key, secret):
@@ -89,7 +96,34 @@ class CnInfoAPI(object):
         return result
 
 
-class DatabaseAPI(object):
+class TuShareAPI:
+
+    def __init__(self):
+        self.__token = 'b19d070b1ac1e63f7b1ae4d353d109794441e4bd830e7beeb2ebd8bd'
+
+    def download_daily_price(self, which_day=None):
+
+        if not which_day:
+            which_day = datetime.today() - timedelta(days=1)       # 如果不写哪天，就取昨天的。which_day格式: YYYYMMDD, 如 20190821
+
+        price_df = pd.DataFrame()
+        limit = 10
+        while price_df.empty and limit > 0:
+
+            price_df = ts.pro_api(self.__token).daily(trade_date=which_day.strftime('%Y%m%d'))
+
+            which_day -= timedelta(days=1)
+            limit -= 1
+
+        replace_dict = {'ts_code': {r'\D': ''}}    # 去除code后面的.SZ, .SH 这样的字样。 \D表示“非数字”
+        name_dict = {'ts_code': 'code', 'trade_date': 'date', 'close': 'price'}
+
+        processed_df = price_df.replace(replace_dict, regex=True).rename(columns=name_dict)[name_dict.values()]
+
+        return processed_df
+
+
+class DatabaseAPI:
 
     def __init__(self):
 
@@ -102,47 +136,155 @@ class DatabaseAPI(object):
     def close(self):
         self.database.close()
 
-    def get_industry(self, stock_name):
+    def __enter__(self):
 
-        sql_string = 'SELECT * FROM {t} WHERE name = "{n}"'.format(t=self.industry_table, n=stock_name)
+        db_file, industry_table, statement_table = 'financial_statements.sqlite3', 'industry', 'statement'
+
+        self.database = sqlite3.connect(db_file)
+        self.industry_table = industry_table
+        self.statement_table = statement_table
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.database.close()
+
+    def get_industry(self, stock_name=None, sub_industry=None):
+
+        sql_string = 'SELECT * FROM {}'.format(self.industry_table)
+
+        if stock_name:
+            sql_string += ' WHERE name = "{}"'.format(stock_name)
+        elif sub_industry:
+            sql_string += ' WHERE subclass_name = "{}"'.format(sub_industry)
+
+        sql_result = pd.read_sql_query(sql=sql_string, con=self.database)
+
         try:
-            return pd.read_sql_query(sql=sql_string, con=self.database).subclass_name.tolist()[0]
+            class_name, subclass_name = sql_result.class_name.iloc[0], sql_result.subclass_name.iloc[0]
         except IndexError:
-            print('该股票名称不存在：{name}'.format(name=stock_name))
-        return None
+            class_name, subclass_name = None, None
 
-    def get_stock_names(self, industry_name):
-        sql_string = 'SELECT * FROM {t} WHERE subclass_name = "{n}"'.format(t=self.industry_table, n=industry_name)
-        return pd.read_sql_query(sql=sql_string, con=self.database).name.tolist()
+        return class_name, subclass_name
+
+    def get_industry_list(self):
+        sql_string = 'SELECT * FROM {t}'.format(t=self.industry_table)
+        return pd.read_sql_query(sql=sql_string, con=self.database).class_name.unique().tolist()
+
+    def get_sub_industry_list(self, industry_name=None):
+        sql_string = 'SELECT * FROM {t}'.format(t=self.industry_table)
+
+        if industry_name:
+            sql_string += ' WHERE class_name = "{n}"'.format(n=industry_name)
+
+        return pd.read_sql_query(sql=sql_string, con=self.database).subclass_name.unique().tolist()
+
+    def get_stock_list(self, industry_name=None, sub_industry_name=None):
+
+        sql_string = 'SELECT * FROM {t}'.format(t=self.industry_table)      # 如果不输入行业、子行业，就返回全部股票名称
+
+        if industry_name:
+            sql_string += ' WHERE class_name = "{n}"'.format(n=industry_name)
+        elif sub_industry_name:
+            sql_string += ' WHERE subclass_name = "{n}"'.format(n=sub_industry_name)
+
+        return pd.read_sql_query(sql=sql_string, con=self.database).name.unique().tolist()
 
     def get_stock_codes(self, industry_name):
         sql_string = 'SELECT * FROM {t} WHERE subclass_name = "{n}"'.format(t=self.industry_table, n=industry_name)
         return pd.read_sql_query(sql=sql_string, con=self.database).code.tolist()
 
-    def get_all_industry(self):
-        sql_string = 'SELECT * FROM {t}'.format(t=self.industry_table)
-        return pd.read_sql_query(sql=sql_string, con=self.database).subclass_name.unique().tolist()
+    def get_statements(self, industry=None, sub_industry=None, sort_income=True, limit=10, with_price=False):
 
-    def get_statement(self, names, whole_industry=False, sort_income=True):
+        sql_string = 'SELECT * FROM {s} s INNER JOIN {i} i on s.证券简称 = i.name'. \
+            format(s=self.statement_table, i=self.industry_table)
 
-        if whole_industry:
-            name = names if isinstance(names, str) else names[0]                    # 取stock_names的第一个
-            names = self.get_stock_names(industry_name=self.get_industry(name))     # 找到它所属行业的所有公司
+        if industry:
+            sql_string += ' WHERE i.class_name = "{}"'.format(industry)
+        elif sub_industry:
+            sql_string += ' WHERE i.subclass_name = "{}"'.format(sub_industry)
 
-        if isinstance(names, str):
-            condition = '"证券简称"="{n}"'.format(n=names)
-        elif isinstance(names, list):
-            condition = ' or '.join(['"证券简称"="{n}"'.format(n=stock_name) for stock_name in names])
-        else:
-            condition = ''
-
-        sql_string = 'SELECT * FROM {t} WHERE '.format(t=self.statement_table) + condition
         statements = pd.read_sql_query(sql=sql_string, con=self.database)
 
-        if whole_industry and sort_income:
+        if sort_income:
+            statements['一、营业总收入'] = statements['一、营业总收入'].apply(pd.to_numeric)
             statements.sort_values(by='一、营业总收入', ascending=False, inplace=True)
 
+        if limit:
+            statements = statements.iloc[:limit]
+
+        if with_price:
+            statements = statements.merge(TuShareAPI().download_daily_price(), left_on='证券代码', right_on='code')
+
+        statements = self.__post_process(statements)
+
         return statements
+
+    @classmethod
+    def __post_process(cls, statement_df):
+        return statement_df.drop(columns='证券代码').set_index(['证券简称', '报告年度']).apply(pd.to_numeric, errors='ignore').round(2)
+
+
+class AnalysisAPI:
+
+    def __init__(self, df_from_finance_db):
+        self.df = df_from_finance_db
+        self.__nice_report_period()
+        self.__extra_columns()
+
+    def income_df(self):
+        needed_columns = ['一、营业总收入', '毛利润', '三、营业利润', '四、利润总额', '五、净利润']
+        return self.__yi(self.df[needed_columns])
+
+    def cost_df(self):
+        needed_columns = ['剩余利润', '其他成本', '利息支出', '资产减值损失', '财务费用', '管理费用', '销售费用', '其中：营业成本']
+        return self.df[needed_columns].rename(columns={'其中：营业成本': '营业成本'}).divide(self.df['一、营业总收入'], axis=0).round(2)
+
+    def efficiency_df(self):
+        needed_columns = ['毛利率', '运营利润率', '总利润率', '净利率', '股东净利率', '股东ROA', '股东ROE']
+        return self.df[needed_columns].round(2)
+
+    def nice_companies(self):
+        needed_columns = ['五、净利润', '股东ROE', 'subclass_name', 'class_name', 'PE']
+        d = {'subclass_name': '子行业', 'class_name': '行业', '五、净利润': '净利润'}
+
+        renamed_df = self.df[needed_columns].reset_index().rename(columns=d)
+        restricted_df = renamed_df.query('股东ROE > 0 and 净利润 > 0 and PE > 0 and 股东ROE < 1 and PE < 100')
+
+        return restricted_df
+
+    def __nice_report_period(self):
+        d = {'-3-31': ' Q1', '-6-30': ' 半年', '-9-30': ' Q3',  '-12-31': ''}     # 优化“报告年度”的文字，利于图表呈现
+        self.df = self.df.reset_index().replace({'报告年度': d}, regex=True).set_index(['证券简称', '报告年度'])
+
+    def __extra_columns(self):
+
+        # 运营效率图
+        self.df['毛利润'] = self.df['一、营业总收入'] - self.df['二、营业总成本']
+        self.df['毛利率'] = self.df['毛利润'] / self.df['一、营业总收入']
+
+        self.df['运营利润率'] = self.df['三、营业利润'] / self.df['一、营业总收入']
+
+        self.df['总利润率'] = self.df['四、利润总额'] / self.df['一、营业总收入']
+
+        self.df['净利率'] = self.df['五、净利润'] / self.df['一、营业总收入']
+        self.df['股东净利率'] = self.df['归属于母公司所有者的净利润'] / self.df['一、营业总收入']
+
+        self.df['股东ROA'] = self.df['归属于母公司所有者的净利润'] / self.df['资产总计']
+        self.df['股东ROE'] = self.df['归属于母公司所有者的净利润'] / self.df['所有者权益（或股东权益）合计']
+
+        # 成本拆解图
+        self.df['其他成本'] = self.df['二、营业总成本'] - self.df['其中：营业成本'] - self.df['利息支出'] - self.df['销售费用'] - self.df['管理费用'] - self.df['财务费用'] - self.df['资产减值损失']
+        self.df['剩余利润'] = self.df['一、营业总收入'] - self.df['二、营业总成本']
+
+        # atlas图
+        self.df['每股收益'] = self.df['归属于母公司所有者的净利润'] / self.df['实收资本（或股本）']
+        if 'price' in self.df:
+            self.df['PE'] = self.df['price'] / self.df['每股收益']
+
+    @classmethod
+    def __yi(cls, a_df):
+        return (a_df / 100000000).round(1)
 
 
 def cut_list(the_list, limit):

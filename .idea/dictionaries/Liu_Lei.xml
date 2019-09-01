@@ -3,8 +3,14 @@
     <words>
       <w>cninfo</w>
       <w>dataframe</w>
+      <w>dropdown</w>
+      <w>platetype</w>
       <w>scode</w>
+      <w>seccode</w>
+      <w>secname</w>
+      <w>tushare</w>
       <w>xlsx</w>
+      <w>yyyymmdd</w>
     </words>
   </dictionary>
 </component>
