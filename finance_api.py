@@ -4,6 +4,7 @@ import sqlite3
 from math import ceil
 import tushare as ts
 from datetime import datetime, timedelta
+from functions import remove_dunhao
 
 
 class CnInfoAPI:
@@ -233,8 +234,8 @@ class AnalysisAPI:
         self.__extra_columns()
 
     def income_df(self):
-        needed_columns = ['一、营业总收入', '毛利润', '三、营业利润', '四、利润总额', '五、净利润']
-        return self.__yi(self.df[needed_columns])
+        needed_columns = ['一、营业总收入', '毛利润', '三、营业利润', '四、利润总额', '五、净利润', '经营活动产生的现金流量净额']
+        return self.__yi(self.df[needed_columns].rename(columns=remove_dunhao))
 
     def cost_df(self):
         needed_columns = ['剩余利润', '其他成本', '利息支出', '资产减值损失', '财务费用', '管理费用', '销售费用', '其中：营业成本']

@@ -3,7 +3,7 @@ import dash_core_components as dcc
 import dash_html_components as html
 from finance_api import DatabaseAPI, AnalysisAPI
 from dash.dependencies import Input, Output
-from chart_functions import bar_figure, atlas_figure, dash_options
+from functions import bar_figure, atlas_figure, dash_options
 
 
 # 获取股票列表、行业列表、所有公司财务数据
@@ -27,7 +27,7 @@ app = dash.Dash(__name__)
 app.layout = html.Div([header, stock_section, industry_section, sub_industry_section] + charts)
 
 
-# callback 定义
+# callback
 @app.callback(Output('industry-dropdown', 'value'), [Input('stock-dropdown', 'value')])
 def update_industry_dropdown_value(stock_name):
     with DatabaseAPI() as database:
@@ -77,7 +77,7 @@ def update_atlas_chart(sub_industry):
         industry, sub_industry = database.get_industry(sub_industry=sub_industry)
         df = database.get_statements(industry=industry, limit=None, with_price=True)
 
-    title_text = '行业总览（{}）'.format(industry)
+    title_text = '行业：{}'.format(industry)
 
     return atlas_figure(df=AnalysisAPI(df).nice_companies(), title=title_text)
 
